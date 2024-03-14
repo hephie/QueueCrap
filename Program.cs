@@ -1,4 +1,5 @@
-﻿using NServiceBus;
+﻿using DocumentManagement.Events;
+using NServiceBus;
 using NServiceBus.Features;
 using System;
 using System.Threading;
@@ -17,7 +18,7 @@ namespace QueueCrap
             try
             {
                 // DM: Create queue in which events will be published
-                var publisherEndpointConfig = CreatePublisherQueue();
+                var publisherEndpointConfig = await CreatePublisherQueue();
                 var publisherEndpointIntance = await Endpoint.Start(publisherEndpointConfig).ConfigureAwait(false);
                 Console.WriteLine("Publish queue created.");
 
@@ -63,27 +64,27 @@ namespace QueueCrap
         {
             Console.WriteLine();
 
-            //var newEvent = new DocumentSignedEvent() { DocumentGuid = new Guid("2bcf4a25-73fc-4b1a-ae3d-11bd81db1cf0"), DocumentId = 12345 };
-            //await endpointInstance.Publish(newEvent).ConfigureAwait(false);
-            //Console.WriteLine($"Event {newEvent.GetType().Name} - {newEvent.DocumentGuid} published!");
+            var newEvent = new DocumentStatusChangedEvent() { DocumentGuid = Guid.NewGuid(), NewStatus = "Signed" };
+            await endpointInstance.Publish(newEvent).ConfigureAwait(false);
+            Console.WriteLine($"Event {newEvent.GetType().Name} - {newEvent.DocumentGuid} published!");
 
-            var newEvent2 = new DocumentStatusChangedEvent() { DocumentGuid = new Guid("2bcf4a25-73fc-4b1a-ae3d-11bd81db1cf0"), NewStatus = "bla" };
-            await endpointInstance.Publish(newEvent2).ConfigureAwait(false);
-            Console.WriteLine($"Event {newEvent2.GetType().Name} - {newEvent2.DocumentGuid} published!");
+            var dsEvent = new DocumentSignedEvent() { DocumentGuid = Guid.NewGuid(), DocumentId = 123 };
+            await endpointInstance.Publish(dsEvent).ConfigureAwait(false);
+            Console.WriteLine($"Event {dsEvent.GetType().Name} - {dsEvent.DocumentGuid} published!");
         }
 
-        private static EndpointConfiguration CreatePublisherQueue()
+        private static async Task<EndpointConfiguration> CreatePublisherQueue()
         {
             //Todo:
             //Needed mapping file to register when publishing event from web server to app s erver
 
             var endpointConfiguration = new EndpointConfiguration(publisherQueueName);
+            //endpointConfiguration.UseSerialization<SystemJsonSerializer>();
             endpointConfiguration.UsePersistence<MsmqPersistence>();
             endpointConfiguration.UseSerialization<SystemJsonSerializer>();
+            endpointConfiguration.UseTransport(new MsmqTransport());
             endpointConfiguration.DisableFeature<AutoSubscribe>();
-
-            var transport = endpointConfiguration.UseTransport<MsmqTransport>();
-            endpointConfiguration.SendOnly();
+            //endpointConfiguration.SendOnly();
 
             endpointConfiguration.DefineCriticalErrorAction(OnCriticalError);
             endpointConfiguration.SendFailedMessagesTo($"{publisherQueueName}.error");
@@ -107,25 +108,42 @@ namespace QueueCrap
 
         private static void FailFast(string message, Exception exception) => Environment.FailFast(message, exception);
 
+        private static async Task ConfigureSubscriber()
+        {
+            var endpointConfiguration = new EndpointConfiguration(subscriberOneQueName);
+            //endpointConfiguration.UsePersistence<NonDurablePersistence>();
+            //endpointConfiguration.UseSerialization<SystemJsonSerializer>();
+
+            endpointConfiguration.SendFailedMessagesTo($"{subscriberOneQueName}.error");
+            endpointConfiguration.AuditProcessedMessagesTo($"{subscriberOneQueName}.audit");
+            endpointConfiguration.EnableInstallers();
+
+            var routing = endpointConfiguration.UseTransport(new MsmqTransport());
+            routing.RegisterPublisher(typeof(DocumentStatusChangedEvent), publisherQueueName);
+
+            var endpointInstance = await Endpoint.Start(endpointConfiguration).ConfigureAwait(false);
+            Console.WriteLine($"{subscriberOneQueName} should now be informed if an ${typeof(DocumentStatusChangedEvent).Name} is publisehd to {publisherQueueName}.");
+            await endpointInstance.Stop().ConfigureAwait(false);
+        }
+
         private static EndpointConfiguration RegisterSubscriber()
         {
+            //if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            //    System.Transactions.TransactionManager.ImplicitDistributedTransactions = true;
+
             var endpointConfiguration = new EndpointConfiguration($"{subscriberOneQueName}.{documentStatusChangedEventName}");
 
             //endpointConfiguration.Conventions().Add(MessageConvention.Create(typeof(InteractionModule))); //why ? what?
 
             endpointConfiguration.UseSerialization<SystemJsonSerializer>();
             endpointConfiguration.UsePersistence<MsmqPersistence>();
-            endpointConfiguration.DisableFeature<AutoSubscribe>();
             endpointConfiguration.SendFailedMessagesTo($"{subscriberOneQueName}.{documentStatusChangedEventName}.error");
             endpointConfiguration.AuditProcessedMessagesTo($"{subscriberOneQueName}.{documentStatusChangedEventName}.audit");
             endpointConfiguration.EnableInstallers();
 
-            var transport = endpointConfiguration.UseTransport<MsmqTransport>();
-            transport.Transactions(TransportTransactionMode.ReceiveOnly);
-
             var routing = endpointConfiguration.UseTransport(new MsmqTransport());
             routing.RegisterPublisher(typeof(DocumentStatusChangedEvent), publisherQueueName);
-            //routing.RegisterPublisher(typeof(DocumentSignedEvent), publisherQueueName);
+            routing.RegisterPublisher(typeof(DocumentSignedEvent), publisherQueueName);
 
             return endpointConfiguration;
         }
