@@ -1,7 +1,7 @@
 ﻿using NServiceBus;
 using System;
 
-namespace QueueCrap
+namespace QueueCrap.Shared
 {
     public class DocumentStatusChangedEvent : IEvent
     {
